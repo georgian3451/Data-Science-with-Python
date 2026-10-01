@@ -1,0 +1,4 @@
+Method,Fare outliers flagged,% of rows
+Z-score (|z| > 3),20,2.24
+IQR (k=1.5),116,13.02
+"IQR (k=3, used)",53,5.95

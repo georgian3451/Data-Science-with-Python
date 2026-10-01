@@ -1,0 +1,7 @@
+Pclass,Sex_label,Passengers,SurvivalRate,AvgAge,AvgFare
+1,Female,94,0.97,34.52,78.0
+1,Male,122,0.37,40.18,54.21
+2,Female,76,0.92,28.7,21.97
+2,Male,108,0.16,30.42,20.58
+3,Female,144,0.5,21.64,16.12
+3,Male,347,0.14,25.98,12.75
