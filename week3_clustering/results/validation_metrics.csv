@@ -1,0 +1,6 @@
+metric,value
+Silhouette (k=3),0.285
+Agglomerative silhouette,0.277
+ARI vs cultivar,0.897
+NMI vs cultivar,0.876
+KMeans-Agglomerative agreement,169/178
