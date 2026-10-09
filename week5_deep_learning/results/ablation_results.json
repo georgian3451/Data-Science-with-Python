@@ -1,0 +1,5 @@
+{
+  "Baseline MLP (10k subset, 8 epochs)": 0.8406999707221985,
+  "CNN, no augmentation/dropout (10k subset, 8 epochs)": 0.6978999972343445,
+  "Final CNN (full 54k train, augmentation+BatchNorm+Dropout, 12 epochs)": 0.902400016784668
+}
