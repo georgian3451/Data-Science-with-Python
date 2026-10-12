@@ -3,7 +3,7 @@
 Work completed during the **Virtual Data Science with Python Trainee** internship at **YuvaIntern (Henry Harvin)**, Aug-Oct 2026.
 Each week has its own folder with the Python code, generated figures/tables, and the full written report in `reports/`.
 
-> Weeks 1-5 are in this repo. Week 6 (capstone) is being added.
+> All 6 weeks are in this repo.
 
 | Week | Topic | Dataset | Key result |
 |---|---|---|---|
@@ -12,6 +12,7 @@ Each week has its own folder with the Python code, generated figures/tables, and
 | 3 | Unsupervised learning & clustering | UCI Wine (178 x 13) | K-Means (k=3) + Ward hierarchical; silhouette 0.285; **ARI 0.897** vs true cultivars |
 | 4 | Supervised learning (classification) | Titanic (cleaned) | 6 models compared with 5-fold CV; tuned Gradient Boosting on held-out test: **81.6% acc, F1 0.740, ROC-AUC 0.862** |
 | 5 | Deep learning (CNN, TensorFlow/Keras) | Fashion-MNIST (70k images) | 75k-param CNN with augmentation + BatchNorm + Dropout; **~90% test accuracy** (90.2% in the committed run), ablation vs MLP and plain CNN |
+| 6 | Capstone: end-to-end pipeline | Titanic (raw) | Acquire -> clean -> EDA -> supervised + unsupervised; tuned GB **81.6% acc / ROC-AUC 0.862**; K-Means k=2 silhouette 0.433 (survival 30% vs 65%), plus a k=4 view that isolates large families (12% survival) |
 
 ## Repository structure
 
@@ -23,13 +24,14 @@ Each week has its own folder with the Python code, generated figures/tables, and
 ├── data/
 │   ├── README.md
 │   ├── raw/                       # titanic.csv, wine.csv, fashion-mnist/
-│   └── processed/                 # titanic_cleaned.csv, data_dictionary.csv, sample_cleaned_head10.csv
+│   └── processed/                 # titanic_cleaned.csv, capstone_cleaned.csv, data_dictionary.csv, sample_cleaned_head10.csv
 ├── scripts/download_data.py       # re-downloads the raw Titanic CSV
 ├── week1_data_cleaning/           # 01_explore.py, 02_clean_preprocess.py, 03_additional_analysis.py
 ├── week2_eda/                     # eda_analysis.py
 ├── week3_clustering/              # clustering_analysis.py
 ├── week4_supervised/              # model_pipeline.py
 ├── week5_deep_learning/           # data_loader.py, dl_pipeline.py
+├── week6_capstone/                # capstone_pipeline.py
 └── reports/                       # weekly .docx reports
 ```
 
@@ -47,7 +49,7 @@ pip install -r requirements.txt
 
 ## Run order
 
-Scripts can be run from any directory. Week 2 needs the cleaned file that Week 1 produces; Week 3 is standalone; Week 4 also needs the Week 1 output; Week 5 needs `data/raw/fashion-mnist/` (included, or run `python scripts/download_data.py`).
+Scripts can be run from any directory. Week 2 needs the cleaned file that Week 1 produces; Week 3 is standalone; Week 4 also needs the Week 1 output; Week 6 is standalone (runs its own condensed cleaning from the raw CSV); Week 5 needs `data/raw/fashion-mnist/` (included, or run `python scripts/download_data.py`).
 
 ```bash
 python week1_data_cleaning/01_explore.py            # profile raw data
@@ -57,6 +59,7 @@ python week2_eda/eda_analysis.py
 python week3_clustering/clustering_analysis.py      # uses scikit-learn's built-in wine data
 python week4_supervised/model_pipeline.py           # needs data/processed/titanic_cleaned.csv (Week 1)
 python week5_deep_learning/dl_pipeline.py           # TensorFlow; ~30 min on CPU
+python week6_capstone/capstone_pipeline.py          # standalone, reads raw Titanic; ~15 s
 ```
 
 Random seeds are fixed (`random_state=42`), so the numbers above reproduce exactly.
@@ -68,6 +71,7 @@ Random seeds are fixed (`random_state=42`), so the numbers above reproduce exact
 - **Week 3**: features standardised; k picked with elbow + silhouette (peak at k=3); K-Means cross-checked with Ward hierarchical (169/178 samples agree); PCA used only for 2-D visualisation (55.4% variance); clusters profiled per feature and validated externally against the cultivar labels, which were never used for fitting.
 - **Week 4**: stratified 80/20 split (712/179), scaler fit on train only (no leakage), 6 algorithms scored on 5 metrics via stratified 5-fold CV, GridSearchCV on Random Forest and Gradient Boosting, final test evaluation with confusion matrix, ROC curve, feature importance and learning curve. Top predictors: Title, Pclass, Sex and an Age x Class interaction, which matches the Week 2 EDA.
 - **Week 5**: Fashion-MNIST split 54k train / 6k validation / 10k test; CNN (4 conv layers, BatchNorm, Dropout, GlobalAveragePooling) with random translation/zoom/flip augmentation, Adam + EarlyStopping + ReduceLROnPlateau; per-class precision/recall/F1, confusion matrix, misclassified samples, and an ablation study. Shirt is the weakest class (confused with T-shirt, Pullover, Coat), which is a known property of Fashion-MNIST at 28x28. Note: TensorFlow on CPU with random augmentation is not bit-reproducible even with fixed seeds, so a re-run lands within about 1 point of the committed outputs (committed run: 90.24% test accuracy, MLP baseline 84.1%, unregularised CNN 69.8%). The `.docx` report quotes an earlier run (89.25%); the conclusions are the same.
+- **Week 6**: full pipeline in one script: raw data -> condensed Week 1 cleaning -> EDA -> tuned Gradient Boosting (stratified split, 5-fold CV, GridSearchCV on F1) -> K-Means segmentation with elbow + silhouette. k=2 is chosen on silhouette; k=4 is shown as a supplementary view because it separates large families (56 passengers, 12% survival) and a high-survival women/children group. Clusters are built without the target, then profiled against survival.
 
 ### Limitations / future work (Week 3)
 
@@ -76,6 +80,10 @@ Silhouette of ~0.28 means clusters overlap somewhat, which is expected since che
 ### Limitations / future work (Weeks 4-5)
 
 Week 4: only 891 rows, so test metrics (179 passengers) are noisy; recall (68%) is lower than precision, so a threshold shift or class weights could be tried. Week 5: trained on CPU with a 12-epoch cap; a deeper network or longer schedule might lift the upper-body garment classes slightly, but much of the Shirt confusion is a data limitation.
+
+### Limitations / future work (Week 6)
+
+Single small dataset, so the pipeline is a demonstration rather than a generalisable result. Next steps: bootstrap-based cluster stability, probability calibration and threshold tuning for the 68% recall, and external validation on a second dataset.
 
 ## Reports
 
