@@ -7,12 +7,12 @@ Each week has its own folder with the Python code, generated figures/tables, and
 
 | Week | Topic | Dataset | Key result |
 |---|---|---|---|
-| 1 | Data acquisition, cleaning & preprocessing | Titanic (891 x 12) | 891 x 16 clean, 0 missing, no rows dropped; 5-fold CV accuracy **80.25% -> 82.60%** vs naive "drop NA" |
+| 1 | Data acquisition, cleaning & preprocessing | Titanic (891 x 12) | 891 x 16 clean, 0 missing, no rows dropped; 5-fold CV accuracy **80.11% -> 82.49%** (leakage-safe CV pipeline vs naive "drop NA") |
 | 2 | Exploratory data analysis & visualization | Titanic (cleaned) | 13 annotated plots + 2 aggregation tables; 1st-class women **97%** vs 3rd-class men **14%** survival |
 | 3 | Unsupervised learning & clustering | UCI Wine (178 x 13) | K-Means (k=3) + Ward hierarchical; silhouette 0.285; **ARI 0.897** vs true cultivars |
-| 4 | Supervised learning (classification) | Titanic (cleaned) | 6 models compared with 5-fold CV; tuned Gradient Boosting on held-out test: **81.6% acc, F1 0.740, ROC-AUC 0.862** |
+| 4 | Supervised learning (classification) | Titanic (raw, 891 x 12) | Leakage-safe Pipeline + ColumnTransformer; 6 models compared; tuned model on held-out test: **81.6% acc, F1 0.748, ROC-AUC 0.853** |
 | 5 | Deep learning (CNN, TensorFlow/Keras) | Fashion-MNIST (70k images) | 75k-param CNN with augmentation + BatchNorm + Dropout; **~90% test accuracy** (90.2% in the committed run), ablation vs MLP and plain CNN |
-| 6 | Capstone: end-to-end pipeline | Titanic (raw) | Acquire -> clean -> EDA -> supervised + unsupervised; tuned GB **81.6% acc / ROC-AUC 0.862**; K-Means k=2 silhouette 0.433 (survival 30% vs 65%), plus a k=4 view that isolates large families (12% survival) |
+| 6 | Capstone: end-to-end pipeline | Titanic (raw) | Acquire -> clean -> EDA -> supervised (leakage-safe pipeline) + unsupervised; tuned GB **81.0% acc / ROC-AUC 0.844**; K-Means k=2 silhouette 0.433 (survival 30% vs 65%), plus a k=4 view that isolates large families (12% survival) |
 
 ## Repository structure
 
@@ -49,15 +49,15 @@ pip install -r requirements.txt
 
 ## Run order
 
-Scripts can be run from any directory. Week 2 needs the cleaned file that Week 1 produces; Week 3 is standalone; Week 4 also needs the Week 1 output; Week 6 is standalone (runs its own condensed cleaning from the raw CSV); Week 5 needs `data/raw/fashion-mnist/` (included, or run `python scripts/download_data.py`).
+Scripts can be run from any directory. Week 2 needs the cleaned file that Week 1 produces; Week 3 is standalone; Week 4 runs directly on the raw Titanic dataset using an sklearn Pipeline + ColumnTransformer to prevent data leakage; Week 6 is standalone (runs its own condensed cleaning from the raw CSV for EDA/clustering and uses the leakage-safe pipeline for supervised modeling); Week 5 needs `data/raw/fashion-mnist/` (included, or run `python scripts/download_data.py`).
 
 ```bash
 python week1_data_cleaning/01_explore.py            # profile raw data
 python week1_data_cleaning/02_clean_preprocess.py   # writes data/processed/titanic_cleaned.csv
-python week1_data_cleaning/03_additional_analysis.py
+python week1_data_cleaning/03_additional_analysis.py # leakage-safe CV validation of cleaning impact
 python week2_eda/eda_analysis.py
 python week3_clustering/clustering_analysis.py      # uses scikit-learn's built-in wine data
-python week4_supervised/model_pipeline.py           # needs data/processed/titanic_cleaned.csv (Week 1)
+python week4_supervised/model_pipeline.py           # leakage-safe Pipeline + ColumnTransformer on raw Titanic
 python week5_deep_learning/dl_pipeline.py           # TensorFlow; ~30 min on CPU
 python week6_capstone/capstone_pipeline.py          # standalone, reads raw Titanic; ~15 s
 ```
@@ -66,12 +66,12 @@ Random seeds are fixed (`random_state=42`), so the numbers above reproduce exact
 
 ## Methods at a glance
 
-- **Week 1**: missingness diagnosed before fixing (chi-square test shows Age is MAR w.r.t. Pclass, so group-wise median imputation); `Cabin` turned into a `HasCabin` flag; 15 zero fares re-imputed; Fare outliers compared across Z-score / IQR(1.5) / IQR(3) and winsorised, not dropped; engineered `FamilySize`, `IsAlone`, `Title`. Data dictionary: `data/processed/data_dictionary.csv`.
+- **Week 1**: missingness diagnosed before fixing (chi-square test shows Age is MAR w.r.t. Pclass, so group-wise median imputation); `Cabin` turned into a `HasCabin` flag; 15 zero fares re-imputed; Fare outliers compared across Z-score / IQR(1.5) / IQR(3) and winsorised, not dropped; engineered `FamilySize`, `IsAlone`, `Title`. Data dictionary: `data/processed/data_dictionary.csv`. Demonstrates exploratory cleaning, while downstream modeling uses the leakage-safe pipeline.
 - **Week 2**: univariate, bivariate and multivariate analysis with groupby aggregation tables; findings tied back to Week 1 preprocessing choices (e.g. Age capping removes the 60+ group).
 - **Week 3**: features standardised; k picked with elbow + silhouette (peak at k=3); K-Means cross-checked with Ward hierarchical (169/178 samples agree); PCA used only for 2-D visualisation (55.4% variance); clusters profiled per feature and validated externally against the cultivar labels, which were never used for fitting.
-- **Week 4**: stratified 80/20 split (712/179), scaler fit on train only (no leakage), 6 algorithms scored on 5 metrics via stratified 5-fold CV, GridSearchCV on Random Forest and Gradient Boosting, final test evaluation with confusion matrix, ROC curve, feature importance and learning curve. Top predictors: Title, Pclass, Sex and an Age x Class interaction, which matches the Week 2 EDA.
+- **Week 4**: stratified 80/20 split (712/179) on raw data, zero data leakage via scikit-learn Pipeline and ColumnTransformer (imputation, IQR capping, one-hot encoding, and scaling fit strictly on training fold only), 6 algorithms scored on 5 metrics via stratified 5-fold CV, GridSearchCV on Random Forest and Gradient Boosting, final test evaluation with confusion matrix, ROC curve, feature importance and learning curve. Top predictors: Title, Sex, Age x Class interaction, and Fare relative to class.
 - **Week 5**: Fashion-MNIST split 54k train / 6k validation / 10k test; CNN (4 conv layers, BatchNorm, Dropout, GlobalAveragePooling) with random translation/zoom/flip augmentation, Adam + EarlyStopping + ReduceLROnPlateau; per-class precision/recall/F1, confusion matrix, misclassified samples, and an ablation study. Shirt is the weakest class (confused with T-shirt, Pullover, Coat), which is a known property of Fashion-MNIST at 28x28. Note: TensorFlow on CPU with random augmentation is not bit-reproducible even with fixed seeds, so a re-run lands within about 1 point of the committed outputs (committed run: 90.24% test accuracy, MLP baseline 84.1%, unregularised CNN 69.8%). The `.docx` report quotes an earlier run (89.25%); the conclusions are the same.
-- **Week 6**: full pipeline in one script: raw data -> condensed Week 1 cleaning -> EDA -> tuned Gradient Boosting (stratified split, 5-fold CV, GridSearchCV on F1) -> K-Means segmentation with elbow + silhouette. k=2 is chosen on silhouette; k=4 is shown as a supplementary view because it separates large families (56 passengers, 12% survival) and a high-survival women/children group. Clusters are built without the target, then profiled against survival.
+- **Week 6**: full pipeline in one script: raw data -> condensed Week 1 cleaning -> EDA -> leakage-safe supervised modeling (Pipeline + ColumnTransformer fit only on training splits, GridSearchCV on F1) -> K-Means segmentation with elbow + silhouette. k=2 is chosen on silhouette; k=4 is shown as a supplementary view because it separates large families (56 passengers, 12% survival) and a high-survival women/children group. Clusters are built without the target, then profiled against survival.
 
 ### Limitations / future work (Week 3)
 
