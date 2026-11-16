@@ -1,5 +1,10 @@
 import os
+import sys
+from pathlib import Path
+
 os.chdir(os.path.dirname(os.path.abspath(__file__)))   # run from anywhere; paths below are relative to this folder
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 os.makedirs("figures", exist_ok=True)
 os.makedirs("results", exist_ok=True)
 import pandas as pd
@@ -20,6 +25,12 @@ from sklearn.metrics import (
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 
+from src.preprocessing import (
+    TitanicFeaturePipeline,
+    get_feature_column_transformer,
+    build_titanic_pipeline,
+)
+
 np.random.seed(42)
 sns.set_style("whitegrid")
 
@@ -33,6 +44,11 @@ print("Missing values:\n", raw.isnull().sum())
 # ============================================================
 # PHASE 2 — DATA CLEANING (condensed from Week 1 methodology)
 # ============================================================
+# NOTE: This section performs whole-dataset exploratory cleaning used for
+# Phase 3 EDA and Phase 5 unsupervised passenger segmentation.
+# Downstream supervised modeling (Phase 4) encapsulates all cleaning, imputation,
+# capping, and encoding inside a scikit-learn Pipeline (src.preprocessing) fit
+# exclusively on the training split to guarantee zero data leakage.
 df = raw.copy()
 
 df["HasCabin"] = df["Cabin"].notnull().astype(int)
@@ -98,20 +114,31 @@ print("\nOverall survival rate: {:.1f}%".format(df["Survived"].mean()*100))
 print("Correlation with Survived:\n", df_encoded[corr_cols].corr()["Survived"].sort_values(ascending=False))
 
 # ============================================================
-# PHASE 4 — SUPERVISED MODELING (Predict Survival)
+# PHASE 4 — SUPERVISED MODELING (Predict Survival, Leakage-Safe)
 # ============================================================
-X = df_encoded.drop(columns=["Survived"])
-y = df_encoded["Survived"]
+# Leakage-safe setup: split raw data into train/test splits first.
+# Preprocessing, group-median imputation, IQR capping, one-hot encoding,
+# and feature interaction calculations are fit exclusively on the training
+# split / inside each CV fold via Pipeline + ColumnTransformer.
+X_raw = raw.drop(columns=["Survived"])
+y_raw = raw["Survived"]
 
-class_avg_fare = df_encoded.groupby("Pclass")["Fare"].transform("mean")
-X["FareRelativeToClass"] = df_encoded["Fare"] / class_avg_fare
-X["AgeClassInteraction"] = df_encoded["Age"] * df_encoded["Pclass"]
-
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
+X_train, X_test, y_train, y_test = train_test_split(
+    X_raw, y_raw, test_size=0.2, stratify=y_raw, random_state=42
+)
 cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
-param_grid = {"n_estimators": [100, 200], "max_depth": [2, 3, 4], "learning_rate": [0.05, 0.1]}
-grid = GridSearchCV(GradientBoostingClassifier(random_state=42), param_grid, cv=cv, scoring="f1", n_jobs=-1)
+pipe_gb = build_titanic_pipeline(
+    GradientBoostingClassifier(random_state=42),
+    needs_scaling=False,
+    include_interactions=True,
+)
+param_grid = {
+    "clf__n_estimators": [100, 200],
+    "clf__max_depth": [2, 3, 4],
+    "clf__learning_rate": [0.05, 0.1],
+}
+grid = GridSearchCV(pipe_gb, param_grid, cv=cv, scoring="f1", n_jobs=-1)
 grid.fit(X_train, y_train)
 best_model = grid.best_estimator_
 print("\nBest hyperparameters:", grid.best_params_)
@@ -134,22 +161,26 @@ cm = confusion_matrix(y_test, y_pred)
 fig, axes = plt.subplots(1, 2, figsize=(10, 4.2))
 sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=axes[0],
             xticklabels=["Died","Survived"], yticklabels=["Died","Survived"])
-axes[0].set_title(f"Confusion Matrix (Test, n={len(y_test)})")
+axes[0].set_title(f"Confusion Matrix (Held-out Test, n={len(y_test)})")
 axes[0].set_xlabel("Predicted"); axes[0].set_ylabel("True")
 
-RocCurveDisplay.from_predictions(y_test, y_proba, ax=axes[1], name="Gradient Boosting", color="#4C72B0")
+RocCurveDisplay.from_predictions(y_test, y_proba, ax=axes[1], name="Gradient Boosting")
 axes[1].plot([0,1],[0,1], linestyle="--", color="gray")
 axes[1].set_title("ROC Curve")
 plt.tight_layout()
 plt.savefig("figures/fig2_supervised_evaluation.png", dpi=140)
 plt.close()
 
-importances = pd.Series(best_model.feature_importances_, index=X_train.columns).sort_values(ascending=False)
+clf = best_model.named_steps["clf"]
+encoder = best_model.named_steps["encoder"]
+raw_feat_names = encoder.get_feature_names_out()
+clean_feat_names = [f.replace("cat__", "").replace("num__", "") for f in raw_feat_names]
+importances = pd.Series(clf.feature_importances_, index=clean_feat_names).sort_values(ascending=False)
 print("\nTop features:\n", importances.head(8))
 
 fig, ax = plt.subplots(figsize=(7,4.5))
 importances.head(10).sort_values().plot(kind="barh", ax=ax, color="#55A868")
-ax.set_title("Top 10 Feature Importances — Gradient Boosting")
+ax.set_title("Top 10 Feature Importances — Gradient Boosting (Leakage-Safe)")
 ax.set_xlabel("Importance")
 plt.tight_layout()
 plt.savefig("figures/fig3_feature_importance.png", dpi=140)

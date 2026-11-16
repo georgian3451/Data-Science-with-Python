@@ -1,5 +1,10 @@
 import os
+import sys
+from pathlib import Path
+
 os.chdir(os.path.dirname(os.path.abspath(__file__)))   # run from anywhere; paths below are relative to this folder
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 os.makedirs("figures", exist_ok=True)
 os.makedirs("results", exist_ok=True)
 import pandas as pd
@@ -10,7 +15,6 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from sklearn.model_selection import train_test_split, StratifiedKFold, cross_validate, GridSearchCV, learning_curve
-from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
@@ -21,36 +25,29 @@ from sklearn.metrics import (
     confusion_matrix, classification_report, RocCurveDisplay
 )
 
+from src.preprocessing import (
+    TitanicFeaturePipeline,
+    get_feature_column_transformer,
+    build_titanic_pipeline,
+)
+
 sns.set_style("whitegrid")
 np.random.seed(42)
 
 # ============================================================
-# 1. LOAD DATA (already cleaned & feature-engineered in Week 1)
+# 1. LOAD RAW DATA & SPLIT (Leakage-Safe Architecture)
 # ============================================================
-df = pd.read_csv("../data/processed/titanic_cleaned.csv")
-print("Dataset shape:", df.shape)
-print("Class balance:\n", df["Survived"].value_counts(normalize=True).round(3))
+# Critical improvement: we load raw data and split into train/test FIRST.
+# All imputation medians, IQR capping bounds, one-hot encodings, scaling,
+# and interaction baselines are fit strictly on training data / inside CV folds.
+raw = pd.read_csv("../data/raw/titanic.csv")
+print("Raw dataset shape:", raw.shape)
+print("Class balance:\n", raw["Survived"].value_counts(normalize=True).round(3))
 
-X = df.drop(columns=["Survived"])
-y = df["Survived"]
+X = raw.drop(columns=["Survived"])
+y = raw["Survived"]
 
-# ============================================================
-# 2. ADDITIONAL FEATURE ENGINEERING FOR MODELLING
-# ============================================================
-# Interaction feature: class-adjusted fare (fare relative to the mean fare of its own class)
-# captures whether a passenger paid a premium/discount relative to peers in the same class,
-# which plain Fare cannot express.
-class_avg_fare = df.groupby("Pclass")["Fare"].transform("mean")
-X["FareRelativeToClass"] = df["Fare"] / class_avg_fare
-
-# Age x Pclass interaction: a child's survival advantage differs by class (seen in Week 2 EDA)
-X["AgeClassInteraction"] = df["Age"] * df["Pclass"]
-
-print("\nFinal feature set:", list(X.columns))
-
-# ============================================================
-# 3. TRAIN / TEST SPLIT (stratified to preserve class balance)
-# ============================================================
+# Stratified 80/20 train/test split
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.2, stratify=y, random_state=42
 )
@@ -58,31 +55,26 @@ print(f"\nTrain size: {X_train.shape[0]}, Test size: {X_test.shape[0]}")
 print("Train class balance:\n", y_train.value_counts(normalize=True).round(3))
 print("Test class balance:\n", y_test.value_counts(normalize=True).round(3))
 
-# Feature scaling (needed for Logistic Regression, SVM, KNN; harmless for tree models)
-scaler = StandardScaler()
-X_train_scaled = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns, index=X_train.index)
-X_test_scaled = pd.DataFrame(scaler.transform(X_test), columns=X_test.columns, index=X_test.index)
-
 # ============================================================
-# 4. MODEL COMPARISON VIA 5-FOLD STRATIFIED CROSS-VALIDATION
+# 2. MODEL COMPARISON VIA 5-FOLD STRATIFIED CROSS-VALIDATION
 # ============================================================
 cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
 models = {
-    "Logistic Regression": LogisticRegression(max_iter=1000, random_state=42),
-    "K-Nearest Neighbors": KNeighborsClassifier(n_neighbors=7),
-    "Decision Tree": DecisionTreeClassifier(max_depth=5, random_state=42),
-    "Random Forest": RandomForestClassifier(n_estimators=300, random_state=42),
-    "Gradient Boosting": GradientBoostingClassifier(random_state=42),
-    "SVM (RBF kernel)": SVC(probability=True, random_state=42),
+    "Logistic Regression": (LogisticRegression(max_iter=1000, random_state=42), True),
+    "K-Nearest Neighbors": (KNeighborsClassifier(n_neighbors=7), True),
+    "Decision Tree": (DecisionTreeClassifier(max_depth=5, random_state=42), False),
+    "Random Forest": (RandomForestClassifier(n_estimators=300, random_state=42), False),
+    "Gradient Boosting": (GradientBoostingClassifier(random_state=42), False),
+    "SVM (RBF kernel)": (SVC(probability=True, random_state=42), True),
 }
 
 scoring = ["accuracy", "precision", "recall", "f1", "roc_auc"]
 cv_results = []
-for name, model in models.items():
-    # scaled features for distance/gradient-based models, raw for tree-based models
-    Xtr = X_train_scaled if name in ["Logistic Regression", "K-Nearest Neighbors", "SVM (RBF kernel)"] else X_train
-    scores = cross_validate(model, Xtr, y_train, cv=cv, scoring=scoring)
+
+for name, (model, needs_scaling) in models.items():
+    pipe = build_titanic_pipeline(model, needs_scaling=needs_scaling, include_interactions=True)
+    scores = cross_validate(pipe, X_train, y_train, cv=cv, scoring=scoring)
     cv_results.append({
         "Model": name,
         "Accuracy": scores["test_accuracy"].mean(),
@@ -94,7 +86,7 @@ for name, model in models.items():
     })
 
 cv_df = pd.DataFrame(cv_results).sort_values("F1", ascending=False).reset_index(drop=True)
-print("\n===== 5-FOLD CV MODEL COMPARISON (on training set) =====")
+print("\n===== 5-FOLD CV MODEL COMPARISON (Leakage-Safe on Training Set) =====")
 print(cv_df.round(4))
 cv_df.to_csv("results/model_comparison_cv.csv", index=False)
 
@@ -109,7 +101,7 @@ ax.bar(x + 1.5*width, cv_df["Recall"], width, label="Recall", color="#DD8452")
 ax.set_xticks(x)
 ax.set_xticklabels(cv_df["Model"], rotation=20, ha="right")
 ax.set_ylabel("Score (5-fold CV mean)")
-ax.set_title("Model Comparison — 5-Fold Cross-Validation on Training Set")
+ax.set_title("Model Comparison — 5-Fold Cross-Validation on Training Set (Leakage-Safe)")
 ax.legend()
 ax.set_ylim(0, 1)
 plt.tight_layout()
@@ -117,46 +109,48 @@ plt.savefig("figures/fig1_model_comparison.png", dpi=140)
 plt.close()
 
 # ============================================================
-# 5. HYPERPARAMETER TUNING ON THE BEST MODEL (Random Forest / Gradient Boosting)
+# 3. HYPERPARAMETER TUNING (Random Forest & Gradient Boosting)
 # ============================================================
 best_model_name = cv_df.iloc[0]["Model"]
-print(f"\nBest model by CV F1: {best_model_name}")
+print(f"\nTop baseline model by CV F1: {best_model_name}")
 
-param_grid = {
-    "n_estimators": [200, 300, 500],
-    "max_depth": [4, 6, 8, None],
-    "min_samples_leaf": [1, 2, 4],
-    "max_features": ["sqrt", "log2"],
+pipe_rf = build_titanic_pipeline(
+    RandomForestClassifier(random_state=42), needs_scaling=False, include_interactions=True
+)
+param_rf = {
+    "clf__n_estimators": [200, 300, 500],
+    "clf__max_depth": [4, 6, 8, None],
+    "clf__min_samples_leaf": [1, 2, 4],
+    "clf__max_features": ["sqrt", "log2"],
 }
-grid = GridSearchCV(
-    RandomForestClassifier(random_state=42), param_grid, cv=cv, scoring="f1", n_jobs=-1
+grid_rf = GridSearchCV(pipe_rf, param_rf, cv=cv, scoring="f1", n_jobs=-1)
+grid_rf.fit(X_train, y_train)
+print("\nBest hyperparameters (Random Forest):", grid_rf.best_params_)
+print("Best CV F1 score (Random Forest):", round(grid_rf.best_score_, 4))
+
+pipe_gb = build_titanic_pipeline(
+    GradientBoostingClassifier(random_state=42), needs_scaling=False, include_interactions=True
 )
-grid.fit(X_train, y_train)
-print("\nBest hyperparameters (Random Forest):", grid.best_params_)
-print("Best CV F1 score:", round(grid.best_score_, 4))
+param_gb = {
+    "clf__n_estimators": [100, 200],
+    "clf__max_depth": [2, 3, 4],
+    "clf__learning_rate": [0.05, 0.1],
+}
+grid_gb = GridSearchCV(pipe_gb, param_gb, cv=cv, scoring="f1", n_jobs=-1)
+grid_gb.fit(X_train, y_train)
+print("\nBest hyperparameters (Gradient Boosting):", grid_gb.best_params_)
+print("Best CV F1 score (Gradient Boosting):", round(grid_gb.best_score_, 4))
 
-best_rf = grid.best_estimator_
-
-# Also tune Gradient Boosting for comparison since it's often competitive
-gb_grid = GridSearchCV(
-    GradientBoostingClassifier(random_state=42),
-    {"n_estimators": [100, 200], "max_depth": [2, 3, 4], "learning_rate": [0.05, 0.1]},
-    cv=cv, scoring="f1", n_jobs=-1
-)
-gb_grid.fit(X_train, y_train)
-print("\nBest hyperparameters (Gradient Boosting):", gb_grid.best_params_)
-print("Best CV F1 score:", round(gb_grid.best_score_, 4))
-
-final_model = best_rf if grid.best_score_ >= gb_grid.best_score_ else gb_grid.best_estimator_
-final_model_name = "Random Forest (tuned)" if final_model is best_rf else "Gradient Boosting (tuned)"
+final_pipeline = grid_rf.best_estimator_ if grid_rf.best_score_ >= grid_gb.best_score_ else grid_gb.best_estimator_
+final_model_name = "Random Forest (tuned)" if final_pipeline is grid_rf.best_estimator_ else "Gradient Boosting (tuned)"
 print(f"\nFinal chosen model: {final_model_name}")
 
 # ============================================================
-# 6. FINAL EVALUATION ON HELD-OUT TEST SET
+# 4. FINAL EVALUATION ON HELD-OUT TEST SET
 # ============================================================
-final_model.fit(X_train, y_train)
-y_pred = final_model.predict(X_test)
-y_proba = final_model.predict_proba(X_test)[:, 1]
+final_pipeline.fit(X_train, y_train)
+y_pred = final_pipeline.predict(X_test)
+y_proba = final_pipeline.predict_proba(X_test)[:, 1]
 
 test_metrics = {
     "Accuracy": accuracy_score(y_test, y_pred),
@@ -180,25 +174,30 @@ sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax,
             xticklabels=["Died", "Survived"], yticklabels=["Died", "Survived"])
 ax.set_xlabel("Predicted Label")
 ax.set_ylabel("True Label")
-ax.set_title(f"Confusion Matrix — {final_model_name}\n(Test Set, n={len(y_test)})")
+ax.set_title(f"Confusion Matrix — {final_model_name}\n(Held-out Test Set, n={len(y_test)})")
 plt.tight_layout()
 plt.savefig("figures/fig2_confusion_matrix.png", dpi=140)
 plt.close()
 
 # ROC curve
 fig, ax = plt.subplots(figsize=(5, 4.5))
-RocCurveDisplay.from_predictions(y_test, y_proba, ax=ax, name=final_model_name, color="#4C72B0")
+RocCurveDisplay.from_predictions(y_test, y_proba, ax=ax, name=final_model_name)
 ax.plot([0, 1], [0, 1], linestyle="--", color="gray", label="Chance (AUC=0.50)")
-ax.set_title("ROC Curve — Test Set")
+ax.set_title("ROC Curve — Held-out Test Set")
 ax.legend()
 plt.tight_layout()
 plt.savefig("figures/fig3_roc_curve.png", dpi=140)
 plt.close()
 
 # ============================================================
-# 7. FEATURE IMPORTANCE
+# 5. FEATURE IMPORTANCE
 # ============================================================
-importances = pd.Series(final_model.feature_importances_, index=X_train.columns).sort_values(ascending=False)
+clf = final_pipeline.named_steps["clf"]
+encoder = final_pipeline.named_steps["encoder"]
+raw_feature_names = encoder.get_feature_names_out()
+clean_feature_names = [f.replace("cat__", "").replace("num__", "") for f in raw_feature_names]
+
+importances = pd.Series(clf.feature_importances_, index=clean_feature_names).sort_values(ascending=False)
 print("\nFeature importances:\n", importances.round(4))
 importances.to_csv("results/feature_importances.csv")
 
@@ -211,11 +210,11 @@ plt.savefig("figures/fig4_feature_importance.png", dpi=140)
 plt.close()
 
 # ============================================================
-# 8. LEARNING CURVE (diagnose over/underfitting)
+# 6. LEARNING CURVE (diagnose over/underfitting)
 # ============================================================
 train_sizes, train_scores, val_scores = learning_curve(
-    final_model, X_train, y_train, cv=cv, scoring="f1",
-    train_sizes=np.linspace(0.1, 1.0, 8), random_state=42
+    final_pipeline, X_train, y_train, cv=cv, scoring="f1",
+    train_sizes=np.linspace(0.1, 1.0, 8), random_state=42, n_jobs=-1
 )
 fig, ax = plt.subplots(figsize=(6.5, 4.5))
 ax.plot(train_sizes, train_scores.mean(axis=1), "o-", color="#4C72B0", label="Training F1")
@@ -234,4 +233,4 @@ plt.close()
 
 print("\nAll figures and result tables saved.")
 print("Final model:", final_model_name)
-print("Chosen hyperparameters:", grid.best_params_ if final_model is best_rf else gb_grid.best_params_)
+print("Chosen hyperparameters:", grid_rf.best_params_ if final_pipeline is grid_rf.best_estimator_ else grid_gb.best_params_)

@@ -1,3 +1,13 @@
+# ==============================================================================
+# NOTE ON PIPELINE ARCHITECTURE & DATA LEAKAGE:
+# This script demonstrates exploratory, whole-dataset data cleaning and profiling
+# for Week 1 & Week 2 analysis.
+# To strictly avoid data leakage in downstream supervised modelling (Week 4,
+# Week 6, and Week 1 validation in 03_additional_analysis.py), all imputation
+# medians, IQR capping bounds, one-hot encodings, and scaling are encapsulated
+# in a scikit-learn Pipeline (src.preprocessing.TitanicFeaturePipeline) that fits
+# exclusively on the training folds/splits.
+# ==============================================================================
 import os
 os.chdir(os.path.dirname(os.path.abspath(__file__)))   # run from anywhere; paths below are relative to this folder
 os.makedirs("figures", exist_ok=True)

@@ -1,5 +1,9 @@
 import os
+import sys
+from pathlib import Path
 os.chdir(os.path.dirname(os.path.abspath(__file__)))   # run from anywhere; paths below are relative to this folder
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 os.makedirs("figures", exist_ok=True)
 os.makedirs("results", exist_ok=True)
 import pandas as pd
@@ -11,7 +15,8 @@ import seaborn as sns
 from scipy import stats
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import cross_val_score, StratifiedKFold
-from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from src.preprocessing import TitanicFeaturePipeline, get_feature_column_transformer
 
 sns.set_style("whitegrid")
 raw = pd.read_csv("../data/raw/titanic.csv")
@@ -80,7 +85,7 @@ outlier_method_summary = pd.DataFrame({
 })
 
 # ============================================================
-# D. Quantifying the impact of cleaning: naive vs cleaned model
+# D. Quantifying the impact of cleaning: naive vs cleaned model (leakage-free inside CV)
 # ============================================================
 # Naive pipeline: minimal handling (drop Cabin/Name/Ticket, drop rows with any remaining NA,
 # just label-encode Sex/Embarked) - representative of "skip proper cleaning"
@@ -92,19 +97,27 @@ naive_dropna = naive.dropna()  # naive approach: just drop incomplete rows
 X_naive = naive_dropna.drop(columns=["Survived"])
 y_naive = naive_dropna["Survived"]
 
-X_clean = clean.drop(columns=["Survived"])
-y_clean = clean["Survived"]
+# Leakage-free cleaned pipeline: imputation, capping, and one-hot encoding are fit
+# strictly on the training fold inside each CV split
+X_raw = raw.drop(columns=["Survived", "AgeMissing"], errors="ignore")
+y_raw = raw["Survived"]
 
 cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-model = LogisticRegression(max_iter=1000)
+model_naive = LogisticRegression(max_iter=1000, random_state=42)
 
-naive_scores = cross_val_score(model, X_naive, y_naive, cv=cv, scoring="accuracy")
-clean_scores = cross_val_score(model, X_clean, y_clean, cv=cv, scoring="accuracy")
+clean_pipe = Pipeline([
+    ("prep", TitanicFeaturePipeline(include_interactions=False)),
+    ("encoder", get_feature_column_transformer(include_interactions=False)),
+    ("clf", LogisticRegression(max_iter=1000, random_state=42)),
+])
+
+naive_scores = cross_val_score(model_naive, X_naive, y_naive, cv=cv, scoring="accuracy")
+clean_scores = cross_val_score(clean_pipe, X_raw, y_raw, cv=cv, scoring="accuracy")
 
 model_comparison = pd.DataFrame({
-    "Pipeline": ["Naive (rows with any NA dropped)", "Cleaned (this report's pipeline)"],
-    "Rows used": [len(X_naive), len(X_clean)],
-    "Features": [X_naive.shape[1], X_clean.shape[1]],
+    "Pipeline": ["Naive (rows with any NA dropped)", "Cleaned (leakage-safe CV pipeline)"],
+    "Rows used": [len(X_naive), len(X_raw)],
+    "Features": [X_naive.shape[1], 15],
     "Mean CV accuracy": [round(naive_scores.mean(), 4), round(clean_scores.mean(), 4)],
     "Std CV accuracy": [round(naive_scores.std(), 4), round(clean_scores.std(), 4)],
 })
@@ -116,7 +129,7 @@ plt.bar(["Naive pipeline", "Cleaned pipeline"],
         color=["#C44E52", "#55A868"], capsize=6)
 plt.ylim(0.5, 0.9)
 plt.ylabel("5-fold CV accuracy")
-plt.title("Impact of cleaning on model accuracy\n(Logistic Regression)")
+plt.title("Impact of cleaning on model accuracy\n(Leakage-free inside 5-Fold CV)")
 plt.tight_layout()
 plt.savefig("figures/fig9_model_impact.png", dpi=140)
 plt.close()
@@ -131,7 +144,7 @@ print(f"\nChi-square test (AgeMissing ~ Pclass): chi2={chi2:.3f}, p={p_val:.5f},
 print("\nOutlier method comparison:\n", outlier_method_summary)
 
 print("\nNaive pipeline rows retained:", len(X_naive), "of", len(raw))
-print("Cleaned pipeline rows retained:", len(X_clean), "of", len(raw))
+print("Cleaned pipeline rows retained:", len(X_raw), "of", len(raw))
 print("\nModel comparison:\n", model_comparison)
 print(f"\nAccuracy delta (cleaned - naive): {clean_scores.mean() - naive_scores.mean():.4f}")
 
